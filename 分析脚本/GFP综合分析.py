@@ -12,11 +12,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import TwoSlopeNorm
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
 
 
 根目录 = Path(__file__).resolve().parents[1]
@@ -242,38 +237,6 @@ def 生成类型概览(亮度: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame
     return 概览, 分位数, 数量统计
 
 
-def 生成单点突变表(亮度: pd.DataFrame) -> pd.DataFrame:
-    单点 = 亮度.loc[亮度["突变数量"].eq(1)].copy()
-    单点["突变"] = 单点["aaMutations"]
-    解析 = 单点["突变"].str.extract(突变格式)
-    单点["原始氨基酸"] = 解析[0]
-    单点["数据位点_0based"] = pd.to_numeric(解析[1])
-    单点["常规位点_1based"] = 单点["数据位点_0based"] + 1
-    单点["新氨基酸"] = 解析[2]
-    单点["价值分类"] = np.select(
-        [
-            单点["相对WT亮度变化"].ge(0.1),
-            单点["相对WT亮度变化"].le(-0.1),
-        ],
-        ["高价值", "低价值"],
-        default="中性或轻微变化",
-    )
-    return 单点[
-        [
-            "GFP type",
-            "突变",
-            "原始氨基酸",
-            "数据位点_0based",
-            "常规位点_1based",
-            "新氨基酸",
-            "Brightness",
-            "WT亮度",
-            "相对WT亮度变化",
-            "价值分类",
-        ]
-    ].rename(columns={"GFP type": "GFP类型", "Brightness": "亮度"})
-
-
 def 生成替换与位点关联表(展开: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     替换 = (
         展开.groupby(["GFP类型", "突变", "原始氨基酸", "数据位点_0based", "常规位点_1based", "新氨基酸"])
@@ -339,10 +302,9 @@ def 生成替换与位点关联表(展开: pd.DataFrame) -> tuple[pd.DataFrame, 
 
 
 def 生成全类型价值表(
-    单点: pd.DataFrame,
     位点关联: pd.DataFrame,
     替换类型: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     可靠位点 = 位点关联.loc[位点关联["出现次数"].ge(30)].copy()
     位点透视 = (
         可靠位点.pivot_table(
@@ -422,39 +384,7 @@ def 生成全类型价值表(
     )
     替换类型汇总 = 替换类型汇总.sort_values("平均校正后残差_类型等权", ascending=False)
 
-    单点汇总 = (
-        单点.groupby(["突变", "原始氨基酸", "数据位点_0based", "常规位点_1based", "新氨基酸"])
-        .agg(
-            覆盖GFP类型数=("GFP类型", "nunique"),
-            覆盖GFP类型=("GFP类型", lambda x: ",".join(sorted(set(x)))),
-            记录数=("突变", "size"),
-            平均亮度=("亮度", "mean"),
-            平均相对WT变化_类型等权=("相对WT亮度变化", "mean"),
-            中位相对WT变化_类型等权=("相对WT亮度变化", "median"),
-            高价值类型数=("相对WT亮度变化", lambda x: int((x >= 0.1).sum())),
-            低价值类型数=("相对WT亮度变化", lambda x: int((x <= -0.1).sum())),
-        )
-        .reset_index()
-    )
-    单点汇总["跨类型价值分类"] = np.select(
-        [
-            单点汇总["覆盖GFP类型数"].ge(2)
-            & 单点汇总["平均相对WT变化_类型等权"].ge(0.1)
-            & 单点汇总["高价值类型数"].ge(2)
-            & 单点汇总["低价值类型数"].eq(0),
-            单点汇总["覆盖GFP类型数"].ge(2)
-            & 单点汇总["平均相对WT变化_类型等权"].le(-0.1)
-            & 单点汇总["低价值类型数"].ge(2)
-            & 单点汇总["高价值类型数"].eq(0),
-            单点汇总["覆盖GFP类型数"].ge(2)
-            & 单点汇总["高价值类型数"].gt(0)
-            & 单点汇总["低价值类型数"].gt(0),
-        ],
-        ["跨类型高价值", "跨类型低价值", "跨类型分歧"],
-        default="证据不足或中性",
-    )
-    单点汇总 = 单点汇总.sort_values("平均相对WT变化_类型等权", ascending=False)
-    return 位点汇总, 替换类型汇总, 单点汇总
+    return 位点汇总, 替换类型汇总
 
 
 def 生成共现组合表(亮度: pd.DataFrame) -> pd.DataFrame:
@@ -484,41 +414,6 @@ def 生成共现组合表(亮度: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def 拟合线性模型(亮度: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, dict[str, object]]]:
-    指标记录 = []
-    系数记录 = []
-    模型对象: dict[str, dict[str, object]] = {}
-    for 类型 in 类型顺序:
-        数据 = 亮度.loc[亮度["GFP type"].eq(类型)].copy()
-        特征字典 = [{token: 1 for token in 拆分突变(x)} for x in 数据["aaMutations"]]
-        向量器 = DictVectorizer(sparse=True)
-        X = 向量器.fit_transform(特征字典)
-        y = 数据["Brightness"].to_numpy()
-        X训练, X测试, y训练, y测试 = train_test_split(X, y, test_size=0.2, random_state=42)
-        模型 = Ridge(alpha=10.0)
-        模型.fit(X训练, y训练)
-        预测 = 模型.predict(X测试)
-        指标记录.append(
-            {
-                "GFP类型": 类型,
-                "训练样本数": len(y训练),
-                "测试样本数": len(y测试),
-                "特征数量": X.shape[1],
-                "测试集MAE": mean_absolute_error(y测试, 预测),
-                "测试集R方": r2_score(y测试, 预测),
-                "模型截距": float(模型.intercept_),
-                "说明": "Ridge 加性基线模型；随机拆分；仅用于探索性评分，不等同于实验验证",
-            }
-        )
-        完整模型 = Ridge(alpha=10.0)
-        完整模型.fit(X, y)
-        for 特征, 系数 in zip(向量器.get_feature_names_out(), 完整模型.coef_):
-            系数记录.append({"GFP类型": 类型, "突变": 特征, "模型系数": 系数})
-        模型对象[类型] = {"向量器": 向量器, "模型": 完整模型}
-    系数表 = pd.DataFrame(系数记录).sort_values(["GFP类型", "模型系数"], ascending=[True, False])
-    return pd.DataFrame(指标记录), 系数表, 模型对象
-
-
 def 序列差异(参考: str, 序列: str) -> list[tuple[int, str, str]]:
     return [(i + 1, 原始, 新) for i, (原始, 新) in enumerate(zip(参考, 序列)) if 原始 != 新]
 
@@ -526,18 +421,9 @@ def 序列差异(参考: str, 序列: str) -> list[tuple[int, str, str]]:
 def 生成候选序列分析(
     候选: pd.DataFrame,
     参考序列: dict[str, str],
-    模型对象: dict[str, dict[str, object]],
-    替换: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     av参考 = 参考序列["avGFP"]
     临时参考 = 候选.iloc[0]["sequence"]
-    av关联值 = (
-        替换.loc[替换["GFP类型"].eq("avGFP")]
-        .set_index("突变")["平均校正后残差"]
-        .to_dict()
-    )
-    向量器 = 模型对象["avGFP"]["向量器"]
-    模型 = 模型对象["avGFP"]["模型"]
     候选记录 = []
     明细记录 = []
     for 序号, 行 in 候选.reset_index(drop=True).iterrows():
@@ -545,10 +431,6 @@ def 生成候选序列分析(
         av差异 = 序列差异(av参考, 序列)
         临时参考差异 = 序列差异(临时参考, 序列)
         tokens = [f"{原始}{位点 - 1}{新}" for 位点, 原始, 新 in av差异]
-        X = 向量器.transform([{token: 1 for token in tokens}])
-        模型预测亮度 = float(模型.predict(X)[0])
-        关联分数 = sum(av关联值.get(token, 0.0) for token in tokens)
-        已知关联突变数 = sum(token in av关联值 for token in tokens)
         候选记录.append(
             {
                 "候选序号": 序号 + 1,
@@ -558,9 +440,6 @@ def 生成候选序列分析(
                 "相对avGFP参考突变": 列表转文本(tokens),
                 "相对2024首条序列差异数": len(临时参考差异),
                 "相对2024首条序列差异": 列表转文本([f"{原始}{位点}{新}" for 位点, 原始, 新 in 临时参考差异]),
-                "avGFP线性模型预测亮度": 模型预测亮度,
-                "已知关联突变数量": 已知关联突变数,
-                "关联残差分数合计": 关联分数,
                 "序列": 序列,
             }
         )
@@ -574,10 +453,9 @@ def 生成候选序列分析(
                     "常规位点_1based": 位点,
                     "原始氨基酸": 原始,
                     "新氨基酸": 新,
-                    "avGFP关联校正后残差": av关联值.get(token, np.nan),
                 }
             )
-    候选表 = pd.DataFrame(候选记录).sort_values("avGFP线性模型预测亮度", ascending=False)
+    候选表 = pd.DataFrame(候选记录).sort_values(["年份", "候选序号"])
     明细表 = pd.DataFrame(明细记录)
     if 明细表.empty:
         年度频率 = pd.DataFrame(columns=["年份", "数据突变编号_0based", "出现序列数", "年度序列数", "年度频率"])
@@ -658,21 +536,6 @@ def 绘制突变数量关系(数量统计: pd.DataFrame) -> None:
     保存图片("突变数量与亮度关系图.png")
 
 
-def 绘制单点突变效应(单点: pd.DataFrame) -> None:
-    for 类型 in 类型顺序:
-        数据 = 单点.loc[单点["GFP类型"].eq(类型)].sort_values("相对WT亮度变化")
-        展示 = pd.concat([数据.head(12), 数据.tail(12)]).drop_duplicates().sort_values("相对WT亮度变化")
-        fig, ax = plt.subplots(figsize=(9, 8))
-        颜色 = np.where(展示["相对WT亮度变化"].ge(0), "#2A9D8F", "#D1495B")
-        ax.barh(展示["突变"], 展示["相对WT亮度变化"], color=颜色)
-        ax.axvline(0, color="#333333", lw=1)
-        ax.set_title(f"{类型} 单点突变效应：两端各 12 个")
-        ax.set_xlabel("相对 WT 亮度变化")
-        ax.set_ylabel("突变（数据位点为 0-based）")
-        ax.grid(axis="x", alpha=0.25)
-        保存图片(f"{类型}_单点突变效应图.png")
-
-
 def 绘制位点价值(位点: pd.DataFrame) -> None:
     fig, axes = plt.subplots(4, 1, figsize=(14, 13), sharex=False)
     for ax, 类型 in zip(axes, 类型顺序):
@@ -686,27 +549,6 @@ def 绘制位点价值(位点: pd.DataFrame) -> None:
     axes[-1].set_xlabel("常规位点（1-based）")
     fig.suptitle("各 GFP 类型位点价值分布：已按突变数量校正", fontsize=14)
     保存图片("各类型位点价值分布图.png")
-
-
-def 绘制热图(单点: pd.DataFrame, 参考序列: dict[str, str]) -> None:
-    for 类型 in 类型顺序:
-        长度 = len(参考序列[类型])
-        矩阵 = np.full((len(氨基酸顺序), 长度), np.nan)
-        数据 = 单点.loc[单点["GFP类型"].eq(类型)]
-        for _, 行 in 数据.iterrows():
-            if 行["新氨基酸"] in 氨基酸顺序 and 1 <= 行["常规位点_1based"] <= 长度:
-                矩阵[氨基酸顺序.index(行["新氨基酸"]), int(行["常规位点_1based"]) - 1] = 行["相对WT亮度变化"]
-        有限 = np.abs(矩阵[np.isfinite(矩阵)])
-        范围 = max(float(np.quantile(有限, 0.98)) if len(有限) else 0.1, 0.1)
-        fig, ax = plt.subplots(figsize=(16, 5))
-        图 = ax.imshow(矩阵, aspect="auto", cmap="RdBu_r", norm=TwoSlopeNorm(vmin=-范围, vcenter=0, vmax=范围), interpolation="nearest")
-        ax.set_yticks(range(len(氨基酸顺序)))
-        ax.set_yticklabels(氨基酸顺序)
-        ax.set_xlabel("常规位点（1-based）")
-        ax.set_ylabel("替换后的氨基酸")
-        ax.set_title(f"{类型} 单点突变替换效应热图")
-        fig.colorbar(图, ax=ax, label="相对 WT 亮度变化")
-        保存图片(f"{类型}_单点突变替换效应热图.png")
 
 
 def 绘制候选年度变化(年度变化: pd.DataFrame) -> None:
@@ -773,10 +615,7 @@ def 生成报告(
     全类型低价值位点: pd.DataFrame,
     高价值位点: pd.DataFrame,
     低价值位点: pd.DataFrame,
-    高价值单点: pd.DataFrame,
-    低价值单点: pd.DataFrame,
-    模型表现: pd.DataFrame,
-    候选评分: pd.DataFrame,
+    候选序列差异: pd.DataFrame,
 ) -> None:
     图片列表 = [
         ("各类型亮度范围图", "各类型亮度范围图.png"),
@@ -815,11 +654,9 @@ code {{ background: #eef2f2; padding: 2px 4px; }}
 <h2>分析口径</h2>
 <ul>
 <li><code>brightness</code> 中的突变位置采用 0-based 编号，例如 <code>A109D</code> 对应参考序列第 110 位。</li>
-<li>单点突变效应定义为该突变亮度减去同类型 WT 亮度。</li>
 <li>位点和替换关联价值使用按 GFP 类型及突变数量校正后的亮度残差，降低多点突变数量造成的混杂。</li>
 <li>全类型分析先在每种 GFP 内计算分数，再跨类型等权汇总；分类型分析则只在单一 GFP 类型内部排序。</li>
 <li>候选序列与 <code>avGFP</code> 参考序列比较，同时保留相对 2024 年首条序列的临时参考差异。</li>
-<li>线性模型为 Ridge 加性基线模型，仅用于探索性排序；候选预测仍需实验验证。</li>
 </ul>
 <h2>类型概览</h2>
 {df_html(类型概览, 20)}
@@ -835,17 +672,11 @@ code {{ background: #eef2f2; padding: 2px 4px; }}
 {分类型示例_html(高价值位点)}
 <h2>低价值位点示例</h2>
 {分类型示例_html(低价值位点)}
-<h2>高价值单点突变示例</h2>
-{分类型示例_html(高价值单点)}
-<h2>低价值单点突变示例</h2>
-{分类型示例_html(低价值单点)}
-<h2>探索性加性模型表现</h2>
-{df_html(模型表现, 10)}
-<h2>候选序列评分</h2>
-{df_html(候选评分.drop(columns=["序列"]), 20)}
+<h2>候选序列差异</h2>
+{df_html(候选序列差异.drop(columns=["序列"]), 20)}
 {图片html}
 <h2>补充图表</h2>
-<p>每种 GFP 的单点突变效应图和单点突变替换效应热图位于 <code>图表</code> 目录。</p>
+<p>更多图表位于 <code>图表</code> 目录。</p>
 </body>
 </html>
 """
@@ -861,22 +692,11 @@ def main() -> None:
     亮度, 候选, 参考序列, 展开 = 构造基础数据()
     数据质量 = 生成数据质量表(亮度, 候选, 参考序列, 展开)
     类型概览, 亮度分位数, 突变数量统计 = 生成类型概览(亮度)
-    单点 = 生成单点突变表(亮度)
     替换关联, 位点关联, 替换类型 = 生成替换与位点关联表(展开)
-    全类型位点价值, 全类型替换类型价值, 全类型单点突变价值 = 生成全类型价值表(单点, 位点关联, 替换类型)
+    全类型位点价值, 全类型替换类型价值 = 生成全类型价值表(位点关联, 替换类型)
     共现组合 = 生成共现组合表(亮度)
-    模型表现, 模型系数, 模型对象 = 拟合线性模型(亮度)
-    候选评分, 候选突变明细, 候选年度频率, 候选年度变化 = 生成候选序列分析(
-        候选, 参考序列, 模型对象, 替换关联
-    )
+    候选序列差异, 候选突变明细, 候选年度频率, 候选年度变化 = 生成候选序列分析(候选, 参考序列)
 
-    单点Top20, 单点Bottom20 = 取各类型两端(单点, "相对WT亮度变化")
-    高价值单点 = 单点.loc[单点["价值分类"].eq("高价值")].sort_values(
-        ["GFP类型", "相对WT亮度变化"], ascending=[True, False]
-    )
-    低价值单点 = 单点.loc[单点["价值分类"].eq("低价值")].sort_values(
-        ["GFP类型", "相对WT亮度变化"], ascending=[True, True]
-    )
     可靠替换 = 替换关联.loc[替换关联["出现次数"].ge(10)]
     高价值替换, _ = 取各类型两端(
         可靠替换.loc[可靠替换["价值分类"].eq("高价值")], "平均校正后残差"
@@ -906,21 +726,13 @@ def main() -> None:
     全类型低价值替换类型 = 全类型替换类型价值.loc[
         全类型替换类型价值["跨类型价值分类"].eq("跨类型低价值")
     ].sort_values("平均校正后残差_类型等权", ascending=True)
-    全类型高价值单点突变 = 全类型单点突变价值.loc[
-        全类型单点突变价值["跨类型价值分类"].eq("跨类型高价值")
-    ].sort_values("平均相对WT变化_类型等权", ascending=False)
-    全类型低价值单点突变 = 全类型单点突变价值.loc[
-        全类型单点突变价值["跨类型价值分类"].eq("跨类型低价值")
-    ].sort_values("平均相对WT变化_类型等权", ascending=True)
     高频共现组合 = 共现组合.sort_values(["GFP类型", "共同出现次数"], ascending=[True, False])
     价值分类统计 = pd.concat(
         [
-            单点.groupby(["GFP类型", "价值分类"]).size().reset_index(name="记录数").assign(分析维度="单点突变"),
             位点关联.groupby(["GFP类型", "价值分类"]).size().reset_index(name="记录数").assign(分析维度="位点关联"),
             替换关联.groupby(["GFP类型", "价值分类"]).size().reset_index(name="记录数").assign(分析维度="替换关联"),
             全类型位点价值.groupby("跨类型价值分类").size().reset_index(name="记录数").assign(分析维度="全类型位点", GFP类型="全类型").rename(columns={"跨类型价值分类": "价值分类"}),
             全类型替换类型价值.groupby("跨类型价值分类").size().reset_index(name="记录数").assign(分析维度="全类型替换类型", GFP类型="全类型").rename(columns={"跨类型价值分类": "价值分类"}),
-            全类型单点突变价值.groupby("跨类型价值分类").size().reset_index(name="记录数").assign(分析维度="全类型单点突变", GFP类型="全类型").rename(columns={"跨类型价值分类": "价值分类"}),
         ],
         ignore_index=True,
     )[["分析维度", "GFP类型", "价值分类", "记录数"]]
@@ -928,9 +740,7 @@ def main() -> None:
     绘制类型亮度范围(亮度)
     绘制类型亮度分布(亮度)
     绘制突变数量关系(突变数量统计)
-    绘制单点突变效应(单点)
     绘制位点价值(位点关联)
-    绘制热图(单点, 参考序列)
     绘制候选年度变化(候选年度变化)
 
     说明 = pd.DataFrame(
@@ -942,9 +752,8 @@ def main() -> None:
             {"项目": "全类型高低价值位点", "内容": "每种 GFP 内先计算位点校正残差，再按常规位点编号跨类型等权汇总；同编号不保证严格结构同源"},
             {"项目": "高低价值替换", "内容": "按同 GFP 类型、同突变数量校正后的平均亮度残差排序；具体替换至少出现 10 次"},
             {"项目": "全类型替换类型", "内容": "按 A>G 等替换类型跨 GFP 类型等权汇总；分类要求覆盖至少 2 种 GFP 且总出现次数不少于 20"},
-            {"项目": "高低价值单点突变", "内容": "严格阈值为相对 WT 亮度变化 >= 0.1 或 <= -0.1；另提供每类 Top20 和 Bottom20 排名"},
             {"项目": "共现组合", "内容": "仅表示共同出现序列的关联特征，不应解释为已证明的协同效应"},
-            {"项目": "候选序列", "内容": "主要与 avGFP 参考序列比较；另保留相对 2024 年首条序列的差异"},
+            {"项目": "候选序列", "内容": "只做序列差异和年度频率分析"},
         ]
     )
     Excel数据表 = {
@@ -953,11 +762,6 @@ def main() -> None:
         "类型概览": 类型概览,
         "亮度分位数": 亮度分位数,
         "突变数量统计": 突变数量统计,
-        "单点突变价值": 单点,
-        "高价值单点突变": 高价值单点,
-        "低价值单点突变": 低价值单点,
-        "单点突变Top20": 单点Top20,
-        "单点突变Bottom20": 单点Bottom20,
         "价值分类统计": 价值分类统计,
         "全类型位点价值": 全类型位点价值,
         "全类型高价值位点": 全类型高价值位点,
@@ -973,14 +777,9 @@ def main() -> None:
         "高价值替换": 高价值替换,
         "低价值替换": 低价值替换,
         "替换类型概览": 替换类型,
-        "全类型单点突变价值": 全类型单点突变价值,
-        "全类型高价值单点突变": 全类型高价值单点突变,
-        "全类型低价值单点突变": 全类型低价值单点突变,
         "高频共现组合": 高频共现组合,
         "共现组合总表": 共现组合,
-        "线性模型表现": 模型表现,
-        "模型突变系数": 模型系数,
-        "候选序列评分": 候选评分,
+        "候选序列差异": 候选序列差异,
         "候选突变明细": 候选突变明细,
         "候选年度频率": 候选年度频率,
         "候选年度变化": 候选年度变化,
@@ -993,10 +792,7 @@ def main() -> None:
         全类型低价值位点,
         高价值位点,
         低价值位点,
-        高价值单点,
-        低价值单点,
-        模型表现,
-        候选评分,
+        候选序列差异,
     )
 
     print(f"已生成工作簿: {工作簿路径}")
@@ -1004,8 +800,6 @@ def main() -> None:
     print(f"图表数量: {len(list(图表目录.glob('*.png')))}")
     print("类型概览:")
     print(类型概览.to_string(index=False))
-    print("模型表现:")
-    print(模型表现.to_string(index=False))
 
 
 if __name__ == "__main__":
