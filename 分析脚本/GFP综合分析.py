@@ -237,6 +237,71 @@ def 生成类型概览(亮度: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame
     return 概览, 分位数, 数量统计
 
 
+def 生成最大亮度突变数量分析(亮度: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    统计行: list[dict[str, object]] = []
+    for (类型, 突变数量), 数据 in 亮度.groupby(["GFP type", "突变数量"], sort=True):
+        最大亮度 = 数据["Brightness"].max()
+        最高记录 = 数据.loc[数据["Brightness"].eq(最大亮度)].sort_values("aaMutations")
+        wt = 数据["WT亮度"].iloc[0]
+        突变组合 = 最高记录["aaMutations"].head(5).tolist()
+        if len(最高记录) > 5:
+            突变组合.append(f"等 {len(最高记录)} 条")
+        统计行.append(
+            {
+                "GFP类型": 类型,
+                "突变数量": 突变数量,
+                "样本数量": len(数据),
+                "最大亮度": 最大亮度,
+                "最大亮度相对WT变化": 最大亮度 - wt,
+                "最高亮度记录数": len(最高记录),
+                "最高亮度突变组合": "; ".join(突变组合),
+                "WT亮度": wt,
+                "最大亮度是否高于WT": 最大亮度 > wt,
+            }
+        )
+    最大亮度统计 = pd.DataFrame(统计行)
+
+    相关行: list[dict[str, object]] = []
+    for 类型 in 类型顺序:
+        数据 = 最大亮度统计.loc[最大亮度统计["GFP类型"].eq(类型)].sort_values("突变数量")
+        可靠数据 = 数据.loc[数据["样本数量"].ge(10)]
+        峰值行 = 数据.loc[数据["最大亮度"].idxmax()]
+
+        def 相关系数(表: pd.DataFrame, 方法: str) -> float:
+            if len(表) < 2 or 表["突变数量"].nunique() < 2:
+                return np.nan
+            return float(表["突变数量"].corr(表["最大亮度"], method=方法))
+
+        spearman_可靠 = 相关系数(可靠数据, "spearman")
+        if pd.isna(spearman_可靠):
+            解读 = "样本充足的突变数量层不足，暂不判断单调趋势"
+        elif spearman_可靠 <= -0.5:
+            解读 = "样本数较充足的层中，最大亮度随突变数量增加整体下降"
+        elif spearman_可靠 >= 0.5:
+            解读 = "样本数较充足的层中，最大亮度随突变数量增加整体上升"
+        else:
+            解读 = "样本数较充足的层中，最大亮度与突变数量的单调关系不强"
+
+        相关行.append(
+            {
+                "GFP类型": 类型,
+                "全部层数": len(数据),
+                "样本数不少于10的层数": len(可靠数据),
+                "突变数量范围": f"{int(数据['突变数量'].min())}-{int(数据['突变数量'].max())}",
+                "Pearson_r_全部层": 相关系数(数据, "pearson"),
+                "Spearman_r_全部层": 相关系数(数据, "spearman"),
+                "Pearson_r_样本数不少于10": 相关系数(可靠数据, "pearson"),
+                "Spearman_r_样本数不少于10": spearman_可靠,
+                "最大亮度峰值": 峰值行["最大亮度"],
+                "峰值突变数量": int(峰值行["突变数量"]),
+                "峰值突变组合": 峰值行["最高亮度突变组合"],
+                "趋势解读": 解读,
+            }
+        )
+    最大亮度相关性 = pd.DataFrame(相关行)
+    return 最大亮度统计, 最大亮度相关性
+
+
 def 生成替换与位点关联表(展开: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     替换 = (
         展开.groupby(["GFP类型", "突变", "原始氨基酸", "数据位点_0based", "常规位点_1based", "新氨基酸"])
@@ -536,6 +601,248 @@ def 绘制突变数量关系(数量统计: pd.DataFrame) -> None:
     保存图片("突变数量与亮度关系图.png")
 
 
+def 绘制最大亮度突变数量关系(最大亮度统计: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
+    for 类型 in 类型顺序:
+        数据 = 最大亮度统计.loc[最大亮度统计["GFP类型"].eq(类型)].sort_values("突变数量")
+        可靠 = 数据["样本数量"].ge(10)
+        axes[0].plot(
+            数据["突变数量"],
+            数据["最大亮度"],
+            marker="o",
+            ms=4,
+            label=类型,
+            color=类型颜色[类型],
+            linewidth=1.8,
+        )
+        axes[0].scatter(
+            数据.loc[~可靠, "突变数量"],
+            数据.loc[~可靠, "最大亮度"],
+            marker="x",
+            s=42,
+            color=类型颜色[类型],
+            linewidths=1.4,
+        )
+        axes[1].plot(数据["突变数量"], 数据["样本数量"], marker="o", ms=3.5, color=类型颜色[类型])
+    axes[0].set_ylabel("最大亮度")
+    axes[0].set_title("最大亮度与突变数量关系")
+    axes[0].grid(alpha=0.25)
+    axes[0].legend(frameon=False, ncol=4)
+    axes[0].text(0.995, 0.03, "叉号：该突变数量层样本数 < 10", transform=axes[0].transAxes, ha="right", fontsize=9)
+    axes[1].set_xlabel("突变数量")
+    axes[1].set_ylabel("样本数（对数轴）")
+    axes[1].set_yscale("log")
+    axes[1].grid(alpha=0.25)
+    保存图片("最大亮度与突变数量关系图.png")
+
+
+def 绘制亮度累计分布(亮度: pd.DataFrame) -> None:
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for 类型 in 类型顺序:
+        数据 = np.sort(亮度.loc[亮度["GFP type"].eq(类型), "Brightness"].to_numpy())
+        y = np.arange(1, len(数据) + 1) / len(数据)
+        ax.plot(数据, y, label=类型, color=类型颜色[类型], linewidth=2)
+    ax.set_title("各 GFP 类型亮度累计分布")
+    ax.set_xlabel("亮度")
+    ax.set_ylabel("累计比例")
+    ax.grid(alpha=0.25)
+    ax.legend(frameon=False)
+    保存图片("各类型亮度累计分布图.png")
+
+
+def 绘制亮度分位数对比(亮度分位数: pd.DataFrame) -> None:
+    fig, ax = plt.subplots(figsize=(11, 6))
+    分位列 = ["P01", "P05", "P25", "P50", "P75", "P95", "P99"]
+    for _, 行 in 亮度分位数.iterrows():
+        类型 = 行["GFP类型"]
+        ax.plot(分位列, [行[x] for x in 分位列], marker="o", label=类型, color=类型颜色[类型], linewidth=2)
+    ax.set_title("各 GFP 类型亮度分位数对比")
+    ax.set_xlabel("分位数")
+    ax.set_ylabel("亮度")
+    ax.grid(alpha=0.25)
+    ax.legend(frameon=False, ncol=4)
+    保存图片("各类型亮度分位数对比图.png")
+
+
+def 绘制比例概览(类型概览: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    x = np.arange(len(类型概览))
+    axes[0].bar(x, 类型概览["疑似检测下限比例"], color=[类型颜色[t] for t in 类型概览["GFP类型"]])
+    axes[0].set_title("疑似检测下限比例")
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(类型概览["GFP类型"], rotation=20)
+    axes[0].set_ylabel("比例")
+    axes[0].grid(axis="y", alpha=0.25)
+    axes[1].bar(x, 类型概览["高于WT比例"], color=[类型颜色[t] for t in 类型概览["GFP类型"]])
+    axes[1].set_title("高于 WT 的样本比例")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(类型概览["GFP类型"], rotation=20)
+    axes[1].grid(axis="y", alpha=0.25)
+    for ax in axes:
+        ax.set_ylim(0, max(类型概览["疑似检测下限比例"].max(), 类型概览["高于WT比例"].max()) * 1.2 + 0.01)
+    保存图片("各类型检测下限与高于WT比例图.png")
+
+
+def 绘制突变数量分层亮度箱线图(亮度: pd.DataFrame) -> None:
+    最大展示数量 = 8
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), sharey=True)
+    for ax, 类型 in zip(axes.flat, 类型顺序):
+        数据 = 亮度.loc[亮度["GFP type"].eq(类型)].copy()
+        数据["突变数量分组"] = 数据["突变数量"].where(数据["突变数量"].le(最大展示数量), f">{最大展示数量}")
+        标签 = list(range(0, 最大展示数量 + 1)) + [f">{最大展示数量}"]
+        分组数据 = [数据.loc[数据["突变数量分组"].eq(x), "Brightness"].to_numpy() for x in 标签]
+        分组数据 = [x for x in 分组数据 if len(x)]
+        有数据标签 = [str(x) for x in 标签 if len(数据.loc[数据["突变数量分组"].eq(x)])]
+        ax.boxplot(分组数据, tick_labels=有数据标签, showfliers=False, patch_artist=True)
+        ax.set_title(类型)
+        ax.set_xlabel("突变数量")
+        ax.grid(axis="y", alpha=0.25)
+    axes[0, 0].set_ylabel("亮度")
+    axes[1, 0].set_ylabel("亮度")
+    fig.suptitle("突变数量分层下的亮度分布", fontsize=14)
+    保存图片("突变数量分层亮度箱线图.png")
+
+
+def 绘制亮度均值中位数WT对比(类型概览: pd.DataFrame) -> None:
+    fig, ax = plt.subplots(figsize=(11, 6))
+    x = np.arange(len(类型概览))
+    width = 0.24
+    ax.bar(x - width, 类型概览["WT亮度"], width, label="WT亮度", color="#3A3A3A")
+    ax.bar(x, 类型概览["平均亮度"], width, label="平均亮度", color="#2A9D8F")
+    ax.bar(x + width, 类型概览["亮度中位数"], width, label="亮度中位数", color="#E76F51")
+    ax.set_title("WT、平均亮度和中位数亮度对比")
+    ax.set_ylabel("亮度")
+    ax.set_xticks(x)
+    ax.set_xticklabels(类型概览["GFP类型"])
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(frameon=False)
+    保存图片("WT平均亮度中位数对比图.png")
+
+
+def 绘制亮度点阵分布(亮度: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True)
+    全局最小 = 亮度["Brightness"].min()
+    全局最大 = 亮度["Brightness"].max()
+    bins = np.linspace(全局最小, 全局最大, 75)
+    for ax, 类型 in zip(axes.flat, 类型顺序):
+        数据 = 亮度.loc[亮度["GFP type"].eq(类型), "Brightness"].to_numpy()
+        计数, 边界 = np.histogram(数据, bins=bins)
+        中心 = (边界[:-1] + 边界[1:]) / 2
+        最大计数 = max(计数.max(), 1)
+        for x, count in zip(中心, 计数):
+            点数 = int(np.ceil(count / 最大计数 * 42))
+            if count == 0:
+                continue
+            y = np.arange(点数)
+            ax.scatter(
+                np.full(点数, x),
+                y,
+                s=16,
+                color=类型颜色[类型],
+                alpha=0.72,
+                linewidths=0,
+            )
+        wt = 亮度.loc[亮度["GFP type"].eq(类型) & 亮度["aaMutations"].eq("WT"), "Brightness"].iloc[0]
+        ax.axvline(wt, color="#222222", linestyle="--", linewidth=1.4)
+        ax.set_title(f"{类型} 亮度点阵分布")
+        ax.set_yticks([])
+        ax.grid(axis="x", alpha=0.18)
+    axes[1, 0].set_xlabel("亮度")
+    axes[1, 1].set_xlabel("亮度")
+    fig.suptitle("各 GFP 类型亮度点阵分布：每列点数表示该亮度区间样本密度", fontsize=14)
+    保存图片("各类型亮度点阵分布图.png")
+
+
+def 绘制突变数量亮度点阵(亮度: pd.DataFrame) -> None:
+    rng = np.random.default_rng(42)
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), sharex=True, sharey=True)
+    for ax, 类型 in zip(axes.flat, 类型顺序):
+        数据 = 亮度.loc[亮度["GFP type"].eq(类型), ["突变数量", "Brightness", "疑似检测下限"]].copy()
+        if len(数据) > 12000:
+            数据 = 数据.sample(12000, random_state=42)
+        x = 数据["突变数量"].clip(upper=12).to_numpy(dtype=float)
+        x = x + rng.uniform(-0.22, 0.22, size=len(x))
+        颜色 = np.where(数据["疑似检测下限"], "#D1495B", 类型颜色[类型])
+        ax.scatter(x, 数据["Brightness"], s=7, c=颜色, alpha=0.22, linewidths=0)
+        ax.set_title(f"{类型}（最多抽样 12,000 点）")
+        ax.grid(alpha=0.18)
+        ax.set_xlim(-0.8, 12.8)
+    axes[1, 0].set_xlabel("突变数量（12 表示 12 个及以上）")
+    axes[1, 1].set_xlabel("突变数量（12 表示 12 个及以上）")
+    axes[0, 0].set_ylabel("亮度")
+    axes[1, 0].set_ylabel("亮度")
+    fig.suptitle("突变数量与亮度点阵图：红色为疑似检测下限记录", fontsize=14)
+    保存图片("突变数量与亮度点阵图.png")
+
+
+def 绘制突变位点亮度点阵(展开: pd.DataFrame) -> None:
+    rng = np.random.default_rng(42)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharey=True)
+    for ax, 类型 in zip(axes.flat, 类型顺序):
+        数据 = 展开.loc[
+            展开["GFP类型"].eq(类型)
+            & 展开["常规位点_1based"].notna()
+            & 展开["亮度"].notna(),
+            ["常规位点_1based", "亮度", "校正后亮度残差"],
+        ].copy()
+        if len(数据) > 22000:
+            数据 = 数据.sample(22000, random_state=42)
+        x = 数据["常规位点_1based"].to_numpy(dtype=float)
+        x = x + rng.uniform(-0.25, 0.25, size=len(x))
+        残差 = 数据["校正后亮度残差"].to_numpy(dtype=float)
+        ax.scatter(
+            x,
+            数据["亮度"],
+            c=残差,
+            cmap="RdBu_r",
+            vmin=-0.8,
+            vmax=0.8,
+            s=6,
+            alpha=0.28,
+            linewidths=0,
+        )
+        ax.set_title(f"{类型} 突变位点-亮度点阵")
+        ax.set_xlabel("常规位点（1-based）")
+        ax.grid(alpha=0.18)
+    axes[0, 0].set_ylabel("亮度")
+    axes[1, 0].set_ylabel("亮度")
+    fig.suptitle("突变位点与亮度点阵图：颜色表示按突变数量校正后的亮度残差", fontsize=14)
+    保存图片("突变位点与亮度点阵图.png")
+
+
+def 绘制替换类型价值热图(展开: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(13, 11))
+    for ax, 类型 in zip(axes.flat, 类型顺序):
+        数据 = 展开.loc[
+            展开["GFP类型"].eq(类型)
+            & 展开["原始氨基酸"].isin(氨基酸顺序)
+            & 展开["新氨基酸"].isin(氨基酸顺序)
+        ]
+        聚合 = (
+            数据.groupby(["原始氨基酸", "新氨基酸"])
+            .agg(出现次数=("突变", "size"), 平均校正后残差=("校正后亮度残差", "mean"))
+            .reset_index()
+        )
+        矩阵 = np.full((len(氨基酸顺序), len(氨基酸顺序)), np.nan)
+        for _, 行 in 聚合.loc[聚合["出现次数"].ge(8)].iterrows():
+            i = 氨基酸顺序.index(行["原始氨基酸"])
+            j = 氨基酸顺序.index(行["新氨基酸"])
+            矩阵[i, j] = 行["平均校正后残差"]
+        有限值 = np.abs(矩阵[np.isfinite(矩阵)])
+        范围 = max(float(np.quantile(有限值, 0.95)) if len(有限值) else 0.1, 0.1)
+        图 = ax.imshow(矩阵, cmap="RdBu_r", vmin=-范围, vmax=范围, interpolation="nearest")
+        ax.set_title(f"{类型} 替换类型价值热图")
+        ax.set_xticks(range(len(氨基酸顺序)))
+        ax.set_xticklabels(氨基酸顺序, fontsize=8)
+        ax.set_yticks(range(len(氨基酸顺序)))
+        ax.set_yticklabels(氨基酸顺序, fontsize=8)
+        ax.set_xlabel("新氨基酸")
+        ax.set_ylabel("原始氨基酸")
+        fig.colorbar(图, ax=ax, fraction=0.046, pad=0.04, label="平均校正后残差")
+    fig.suptitle("氨基酸替换类型价值热图：仅展示出现次数 >= 8 的替换类型", fontsize=14)
+    保存图片("各类型替换类型价值热图.png")
+
+
 def 绘制位点价值(位点: pd.DataFrame) -> None:
     fig, axes = plt.subplots(4, 1, figsize=(14, 13), sharex=False)
     for ax, 类型 in zip(axes, 类型顺序):
@@ -610,6 +917,11 @@ def 分类型示例_html(数据: pd.DataFrame, 每类行数: int = 5) -> str:
 
 def 生成报告(
     类型概览: pd.DataFrame,
+    亮度分位数: pd.DataFrame,
+    突变数量统计: pd.DataFrame,
+    最大亮度统计: pd.DataFrame,
+    最大亮度相关性: pd.DataFrame,
+    价值分类统计: pd.DataFrame,
     数据质量: pd.DataFrame,
     全类型高价值位点: pd.DataFrame,
     全类型低价值位点: pd.DataFrame,
@@ -617,17 +929,10 @@ def 生成报告(
     低价值位点: pd.DataFrame,
     候选序列差异: pd.DataFrame,
 ) -> None:
-    图片列表 = [
-        ("各类型亮度范围图", "各类型亮度范围图.png"),
-        ("各类型亮度分布图", "各类型亮度分布图.png"),
-        ("突变数量与亮度关系图", "突变数量与亮度关系图.png"),
-        ("各类型位点价值分布图", "各类型位点价值分布图.png"),
-        ("候选序列年度突变频率变化图", "候选序列年度突变频率变化图.png"),
-    ]
+    图片文件 = sorted(图表目录.glob("*.png"), key=lambda x: x.name)
     图片html = "\n".join(
-        f"<section><h2>{html.escape(标题)}</h2><img src='图表/{html.escape(文件名)}' alt='{html.escape(标题)}'></section>"
-        for 标题, 文件名 in 图片列表
-        if (图表目录 / 文件名).exists()
+        f"<section class='figure-block'><h2>{html.escape(图片.stem)}</h2><img src='图表/{html.escape(图片.name)}' alt='{html.escape(图片.stem)}'></section>"
+        for 图片 in 图片文件
     )
     内容 = f"""<!doctype html>
 <html lang="zh-CN">
@@ -646,6 +951,9 @@ th, td {{ border: 1px solid #d8e0e2; padding: 6px 8px; text-align: left; }}
 th {{ background: #e9f3f3; position: sticky; top: 0; }}
 img {{ max-width: 100%; border: 1px solid #d8e0e2; }}
 code {{ background: #eef2f2; padding: 2px 4px; }}
+.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 22px; align-items: start; }}
+.figure-block {{ margin-top: 26px; }}
+.figure-block img {{ background: white; }}
 </style>
 </head>
 <body>
@@ -660,6 +968,17 @@ code {{ background: #eef2f2; padding: 2px 4px; }}
 </ul>
 <h2>类型概览</h2>
 {df_html(类型概览, 20)}
+<h2>亮度分布分位数</h2>
+<p>该表用于补充“亮度范围图”：范围只说明最小值和最大值，分位数能看到主体样本集中在哪些亮度区间。</p>
+{df_html(亮度分位数, 20)}
+<h2>突变数量分层统计</h2>
+{df_html(突变数量统计, 40)}
+<h2>最大亮度与突变数量</h2>
+<p>该分析关注每个 GFP 类型、每个突变数量层内可达到的最高亮度；样本数较少的层更容易出现不稳定的极端值，相关性摘要同时给出样本数不少于 10 的层。</p>
+{df_html(最大亮度相关性, 20)}
+{df_html(最大亮度统计, 40)}
+<h2>价值分类统计</h2>
+{df_html(价值分类统计, 40)}
 <h2>数据质量摘要</h2>
 {df_html(数据质量, 30)}
 <h2>全类型高价值位点示例</h2>
@@ -674,9 +993,11 @@ code {{ background: #eef2f2; padding: 2px 4px; }}
 {分类型示例_html(低价值位点)}
 <h2>候选序列差异</h2>
 {df_html(候选序列差异.drop(columns=["序列"]), 20)}
+<h2>全部图表</h2>
+<p>以下自动嵌入 <code>图表</code> 目录中的所有 PNG 图，包含亮度范围、亮度分布、累计分布、分位数、突变数量分层、最大亮度与突变数量、检测下限比例、位点价值和候选序列年度变化。</p>
+<div class="grid">
 {图片html}
-<h2>补充图表</h2>
-<p>更多图表位于 <code>图表</code> 目录。</p>
+</div>
 </body>
 </html>
 """
@@ -692,6 +1013,7 @@ def main() -> None:
     亮度, 候选, 参考序列, 展开 = 构造基础数据()
     数据质量 = 生成数据质量表(亮度, 候选, 参考序列, 展开)
     类型概览, 亮度分位数, 突变数量统计 = 生成类型概览(亮度)
+    最大亮度统计, 最大亮度相关性 = 生成最大亮度突变数量分析(亮度)
     替换关联, 位点关联, 替换类型 = 生成替换与位点关联表(展开)
     全类型位点价值, 全类型替换类型价值 = 生成全类型价值表(位点关联, 替换类型)
     共现组合 = 生成共现组合表(亮度)
@@ -739,7 +1061,17 @@ def main() -> None:
 
     绘制类型亮度范围(亮度)
     绘制类型亮度分布(亮度)
+    绘制亮度累计分布(亮度)
+    绘制亮度分位数对比(亮度分位数)
+    绘制比例概览(类型概览)
+    绘制突变数量分层亮度箱线图(亮度)
+    绘制亮度均值中位数WT对比(类型概览)
+    绘制亮度点阵分布(亮度)
+    绘制突变数量亮度点阵(亮度)
+    绘制突变位点亮度点阵(展开)
+    绘制替换类型价值热图(展开)
     绘制突变数量关系(突变数量统计)
+    绘制最大亮度突变数量关系(最大亮度统计)
     绘制位点价值(位点关联)
     绘制候选年度变化(候选年度变化)
 
@@ -751,6 +1083,7 @@ def main() -> None:
             {"项目": "高低价值位点", "内容": "按同 GFP 类型、同突变数量校正后的平均亮度残差排序；位点至少出现 30 次"},
             {"项目": "全类型高低价值位点", "内容": "每种 GFP 内先计算位点校正残差，再按常规位点编号跨类型等权汇总；同编号不保证严格结构同源"},
             {"项目": "高低价值替换", "内容": "按同 GFP 类型、同突变数量校正后的平均亮度残差排序；具体替换至少出现 10 次"},
+            {"项目": "最大亮度与突变数量", "内容": "按 GFP 类型和突变数量分层统计每层最高亮度；相关性同时给出全部层和样本数不少于 10 的层"},
             {"项目": "全类型替换类型", "内容": "按 A>G 等替换类型跨 GFP 类型等权汇总；分类要求覆盖至少 2 种 GFP 且总出现次数不少于 20"},
             {"项目": "共现组合", "内容": "仅表示共同出现序列的关联特征，不应解释为已证明的协同效应"},
             {"项目": "候选序列", "内容": "只做序列差异和年度频率分析"},
@@ -762,6 +1095,8 @@ def main() -> None:
         "类型概览": 类型概览,
         "亮度分位数": 亮度分位数,
         "突变数量统计": 突变数量统计,
+        "最大亮度突变数量": 最大亮度统计,
+        "最大亮度相关性": 最大亮度相关性,
         "价值分类统计": 价值分类统计,
         "全类型位点价值": 全类型位点价值,
         "全类型高价值位点": 全类型高价值位点,
@@ -787,6 +1122,11 @@ def main() -> None:
     写入Excel(Excel数据表)
     生成报告(
         类型概览,
+        亮度分位数,
+        突变数量统计,
+        最大亮度统计,
+        最大亮度相关性,
+        价值分类统计,
         数据质量,
         全类型高价值位点,
         全类型低价值位点,
