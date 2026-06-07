@@ -975,6 +975,7 @@ code {{ background: #eef2f2; padding: 2px 4px; }}
 {df_html(突变数量统计, 40)}
 <h2>最大亮度与突变数量</h2>
 <p>该分析关注每个 GFP 类型、每个突变数量层内可达到的最高亮度；样本数较少的层更容易出现不稳定的极端值，相关性摘要同时给出样本数不少于 10 的层。</p>
+<section class="figure-block"><img src="图表/最大亮度与突变数量关系图.png" alt="最大亮度与突变数量关系图"></section>
 {df_html(最大亮度相关性, 20)}
 {df_html(最大亮度统计, 40)}
 <h2>价值分类统计</h2>
